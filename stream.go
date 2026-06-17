@@ -25,6 +25,12 @@ type Stream struct {
 	AutoReplay   bool
 	isAutoStream bool
 
+	// EvictSlowClients controls behaviour when a subscriber's event buffer is full.
+	// If true, the subscriber is immediately removed rather than blocking the
+	// fan-out goroutine. This prevents one stalled client from freezing all other
+	// connected clients. Defaults to false to preserve existing behaviour.
+	EvictSlowClients bool
+
 	// Specifies the function to run when client subscribe or un-subscribe
 	OnSubscribe   func(streamID string, sub *Subscriber)
 	OnUnsubscribe func(streamID string, sub *Subscriber)
@@ -74,8 +80,19 @@ func (str *Stream) run() {
 				if str.AutoReplay {
 					str.Eventlog.Add(event)
 				}
-				for i := range str.subscribers {
-					str.subscribers[i].connection <- event
+				for i := len(str.subscribers) - 1; i >= 0; i-- {
+					select {
+					case str.subscribers[i].connection <- event:
+					default:
+						if str.EvictSlowClients {
+							// Subscriber buffer is full — client is stalled.
+							// Call removeSubscriber directly rather than close()
+							// because we are inside stream.run() and close() would
+							// deadlock by sending to the deregister channel that
+							// only this goroutine reads.
+							str.removeSubscriber(i)
+						}
+					}
 				}
 
 			// Shutdown if the server closes
