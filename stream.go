@@ -81,17 +81,18 @@ func (str *Stream) run() {
 					str.Eventlog.Add(event)
 				}
 				for i := len(str.subscribers) - 1; i >= 0; i-- {
-					select {
-					case str.subscribers[i].connection <- event:
-					default:
-						if str.EvictSlowClients {
-							// Subscriber buffer is full — client is stalled.
-							// Call removeSubscriber directly rather than close()
-							// because we are inside stream.run() and close() would
-							// deadlock by sending to the deregister channel that
-							// only this goroutine reads.
+					if str.EvictSlowClients {
+						// Non-blocking: if the buffer is full, evict the subscriber
+						// immediately rather than blocking the fan-out goroutine.
+						// removeSubscriber is used instead of close() to avoid
+						// deadlocking run() on its own deregister channel.
+						select {
+						case str.subscribers[i].connection <- event:
+						default:
 							str.removeSubscriber(i)
 						}
+					} else {
+						str.subscribers[i].connection <- event
 					}
 				}
 
